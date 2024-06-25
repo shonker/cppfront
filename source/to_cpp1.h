@@ -23,18 +23,6 @@
 
 namespace cpp2 {
 
-//  Defined out of line here just to avoid bringing <iostream> in before this,
-//  so that we can't accidentally start depending on iostreams in earlier phases
-auto cmdline_processor::print(std::string_view s, int width)
-    -> void
-{
-    if (width > 0) {
-        std::cout << std::setw(width) << std::left;
-    }
-    std::cout << s;
-}
-
-
 //-----------------------------------------------------------------------
 //
 //  Stringingizing helpers
@@ -89,15 +77,15 @@ auto multi_return_type_name(declaration_node const& n)
 //
 static auto flag_emit_cppfront_info = false;
 static cmdline_processor::register_flag cmd_emit_cppfront_info(
-    9,
+    8,
     "emit-cppfront-info",
-    "Emit cppfront version/build in output file",
+    "Emit cppfront version/build in Cpp1 file",
     []{ flag_emit_cppfront_info = true; }
 );
 
 static auto flag_clean_cpp1 = false;
 static cmdline_processor::register_flag cmd_clean_cpp1(
-    9,
+    8,
     "clean-cpp1",
     "Emit clean Cpp1 without #line directives",
     []{ flag_clean_cpp1 = true; }
@@ -105,7 +93,7 @@ static cmdline_processor::register_flag cmd_clean_cpp1(
 
 static auto flag_line_paths = false;
 static cmdline_processor::register_flag cmd_line_paths(
-    9,
+    8,
     "line-paths",
     "Emit absolute paths in #line directives",
     [] { flag_line_paths = true; }
@@ -169,27 +157,20 @@ static cmdline_processor::register_flag cmd_enable_source_info(
 
 static auto flag_cpp1_filename = std::string{};
 static cmdline_processor::register_flag cmd_cpp1_filename(
-    9,
+    8,
     "output filename",
     "Output to 'filename' (can be 'stdout') - default is *.cpp/*.h",
     nullptr,
     [](std::string const& name) { flag_cpp1_filename = name; }
 );
 
-static auto flag_print_colon_errors = false;
-static cmdline_processor::register_flag cmd_print_colon_errors(
+static auto flag_cwd = std::filesystem::path{};
+static cpp2::cmdline_processor::register_flag cmd_cwd(
     9,
-    "format-colon-errors",
-    "Emit ':line:col:' format for messages - lights up some tools",
-    []{ flag_print_colon_errors = true; }
-);
-
-static auto flag_verbose = false;
-static cmdline_processor::register_flag cmd_verbose(
-    9,
-    "verbose",
-    "Print verbose statistics and -debug output",
-    []{ flag_verbose = true; }
+    "cwd path",
+    "Change current working directory to path",
+    nullptr,
+    [](std::string const& path) { flag_cwd = { path }; }
 );
 
 static auto flag_no_exceptions = false;
@@ -214,38 +195,14 @@ struct text_with_pos{
     text_with_pos(std::string const& t, source_position p) : text{t}, pos{p} { }
 };
 
-// Defined out of line so we can use flag_print_colon_errors.
-auto error_entry::print(
-    auto&              o,
-    std::string const& file
-) const
-    -> void
-{
-    o << file ;
-    if (where.lineno > 0) {
-        if (flag_print_colon_errors) {
-            o << ":" << (where.lineno);
-            if (where.colno >= 0) {
-                o << ":" << where.colno;
-            }
-        }
-        else {
-            o << "("<< (where.lineno);
-            if (where.colno >= 0) {
-                o << "," << where.colno;
-            }
-            o  << ")";
-        }
-    }
-    o << ":";
-    if (internal) {
-        o << " internal compiler";
-    }
-    o << " error: " << msg << "\n";
-}
-
 class positional_printer
 {
+public:
+    positional_printer()                          = default;
+private:
+    positional_printer(positional_printer const&) = delete;
+    void operator=(positional_printer const&)     = delete;
+
     //  Core information
     std::ofstream               out_file        = {}; // Cpp1 syntax output file
     std::ostream*               out             = {}; // will point to out_file or cout
@@ -1131,7 +1088,7 @@ class cppfront
     };
     class current_functions_
     {
-        std::deque<function_info> list = { {} };
+        stable_vector<function_info> list = { {} };
     public:
         auto push(
             declaration_node const*                    decl,
@@ -1297,8 +1254,14 @@ public:
 
         //  Now we'll open the Cpp1 file
         auto cpp1_filename = sourcefile.substr(0, std::ssize(sourcefile) - 1);
+        
+        //  Use explicit filename override if present,
+        //  otherwise strip leading path
         if (!flag_cpp1_filename.empty()) {
-            cpp1_filename = flag_cpp1_filename; // use override if present
+            cpp1_filename = flag_cpp1_filename;
+        }
+        else {
+            cpp1_filename = std::filesystem::path(cpp1_filename).filename().string();
         }
 
         printer.open(
@@ -2431,13 +2394,14 @@ public:
                     is_parameter_name
                     && (
                         current_functions.back().decl->has_in_parameter_named(*tok)
+                        || current_functions.back().decl->has_copy_parameter_named(*tok)
                         || current_functions.back().decl->has_move_parameter_named(*tok)
                         )
                     )
                 {
                     errors.emplace_back(
                         n.position(),
-                        "a 'forward' return type cannot return an 'in' or 'move' parameter"
+                        "a 'forward' return type cannot return an 'in', 'copy', or 'move' parameter"
                     );
                     return;
                 }
@@ -2458,7 +2422,7 @@ public:
                 {
                     errors.emplace_back(
                         n.position(),
-                        "a 'forward' return type cannot return a temporary variable"
+                        "a 'forward' return type must return an 'inout', 'out', or 'forward' parameter; it cannot return a complex expression -- for example: for a function that takes a stream object 'output`, instead of 'return output << data;' write 'output << data; return output;'"
                     );
                     return;
                 }
@@ -3470,7 +3434,11 @@ public:
                         args.reset();
                     }
 
-                    auto print = print_to_string(*i->id_expr, false /*not a local name*/, i->op->type() == lexeme::Dot);
+                    auto print = print_to_string(
+                        *i->id_expr, 
+                        false, // not a local name
+                        i->op->type() == lexeme::Dot || i->op->type() == lexeme::DotDot // member access
+                    );
                     suffix.emplace_back( print, i->id_expr->position() );
                 }
 
@@ -3500,6 +3468,9 @@ public:
                         prefix.emplace_back( "CPP2_ASSERT_IN_BOUNDS(", i->op->position() );
                     }
                     suffix.emplace_back( ", ", i->op->position() );
+                }
+                else if( i->op->type() == lexeme::DotDot) {
+                    suffix.emplace_back(".", i->op->position());
                 }
                 else {
                     suffix.emplace_back( i->op->to_string(), i->op->position() );
@@ -4010,6 +3981,11 @@ public:
     )
         -> void
     {   STACKINSTR
+        if (n.default_initializer) {
+          printer.print_cpp2("{}", n.position());
+          return;
+        }
+
         auto add_parens =
             should_add_expression_list_parens()
             && !n.inside_initializer
@@ -5531,11 +5507,8 @@ public:
 
 
         //  Declarations are handled in multiple passes,
-        //  but we only want to do the sema checks once
-        if (
-            printer.get_phase() == printer.phase2_func_defs
-            && !sema.check(n)
-            )
+        //  but we only want to emit the error messages once (in phase 2)
+        if (!sema.check(n, printer.get_phase() == printer.phase2_func_defs))
         {
             return;
         }
@@ -5679,8 +5652,9 @@ public:
                         }
                         //  Otherwise, just emit the general expression as usual
                         else {
-                            return " = "
-                                   + print_to_string(n);
+                            return "{ "
+                                   + print_to_string(n)
+                                   + " }";
                         }
                     };
 
@@ -6797,7 +6771,7 @@ public:
                 if (n.has_wildcard_type()) {
                     errors.emplace_back(
                         n.identifier->position(),
-                        "an object can have an anonymous name or an anonymous type, but not both at the same type (rationale: if '_ := f();' were allowed to keep the returned object alive, that syntax would be dangerously close to '_ = f();' to discard the returned object, and such importantly opposite meanings deserve more than a one-character typo distance; and explicit discarding gets the nice syntax because it's likely more common)"
+                        "an object can have an anonymous name or an anonymous type, but not both at the same time (rationale: if '_ := f();' were allowed to keep the returned object alive, that syntax would be dangerously close to '_ = f();' to discard the returned object, and such importantly opposite meanings deserve more than a one-character typo distance; and explicit discarding gets the nice syntax because it's likely more common)"
                     );
                     return;
                 }
@@ -6916,7 +6890,7 @@ public:
     //-----------------------------------------------------------------------
     //  debug_print
     //
-    auto debug_print()
+    auto debug_print() const
         -> void
     {
         //  Only create debug output files if we managed to load the source file.

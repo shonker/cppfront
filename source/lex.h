@@ -21,7 +21,6 @@
 #include "io.h"
 #include <map>
 #include <climits>
-#include <deque>
 #include <cstring>
 
 
@@ -84,6 +83,7 @@ enum class lexeme : std::int8_t {
     Semicolon,
     Comma,
     Dot,
+    DotDot,
     Ellipsis,
     QuestionMark,
     At,
@@ -181,6 +181,7 @@ auto _as(lexeme l)
     break;case lexeme::Semicolon:           return "Semicolon";
     break;case lexeme::Comma:               return "Comma";
     break;case lexeme::Dot:                 return "Dot";
+    break;case lexeme::DotDot:              return "DotDot";
     break;case lexeme::Ellipsis:            return "Ellipsis";
     break;case lexeme::QuestionMark:        return "QuestionMark";
     break;case lexeme::At:                  return "At";
@@ -313,11 +314,13 @@ public:
         }
     }
 
-    auto set_global_token_order(index_t fp) const
+    auto set_global_token_order(index_t& counter) const
         -> void
     {
-        assert(global_token_order == 0);    // we only expect to set this once
-        global_token_order = fp;
+        //  In a well-formed program we only expect to set this once
+        if (global_token_order == 0) {
+            global_token_order = ++counter;
+        }
     }
 
     auto get_global_token_order() const
@@ -342,11 +345,11 @@ auto labelized_position(token const* t)
     struct label {
         std::string text;
         label() {
-            static auto ordinal = 0;
+            static auto ordinal = 0;                                        // TODO: static
             text = std::to_string(++ordinal);
         }
     };
-    static auto labels = std::unordered_map<token const*, label const>{};
+    static auto labels = std::unordered_map<token const*, label const>{};   // TODO: static
 
     assert (t);
     return labels[t].text;
@@ -614,11 +617,11 @@ auto expand_raw_string_literal(
 //  A stable place to store additional text for source tokens that are merged
 //  into a whitespace-containing token (to merge the Cpp1 multi-token keywords)
 //  -- this isn't about tokens generated later, that's tokens::generated_tokens
-static auto generated_text  = std::deque<std::string>{};
-static auto generated_lines = std::deque<std::vector<source_line>>{};
+static auto generated_text  = stable_vector<std::string>{};                // TODO: static
+static auto generated_lines = stable_vector<std::vector<source_line>>{};   // TODO: static
 
 
-static auto multiline_raw_strings = std::deque<multiline_raw_string>{};
+static auto multiline_raw_strings = stable_vector<multiline_raw_string>{}; // TODO: static
 
 auto lex_line(
     std::string&               mutable_line,
@@ -846,9 +849,9 @@ auto lex_line(
 
         if (
             i >= 3
-            && (tokens[i-3] != "::" && tokens[i-3] != ".")
+            && (tokens[i-3] != "::" && tokens[i-3].type() != lexeme::Dot && tokens[i - 3].type() != lexeme::DotDot)
             && (tokens[i-2] == "unique" || tokens[i-2] == "shared")
-            && tokens[i-1] == "."
+            && tokens[i-1].type() == lexeme::Dot
             && tokens[i] == "new"
             )
         {
@@ -1403,10 +1406,11 @@ auto lex_line(
 
             //G
             //G punctuator: one of
-            //G     '...' '.'
+            //G     '.' '..' '...'
             break;case '.':
-                if (peek1 == '.' && peek2 == '.') { store(3, lexeme::Ellipsis); }
-                else { store(1, lexeme::Dot); }
+                if      (peek1 == '.' && peek2 == '.') { store(3, lexeme::Ellipsis); }
+                else if (peek1 == '.')                 { store(2, lexeme::DotDot); }
+                else                                   { store(1, lexeme::Dot); }
 
             //G     '::' ':'
             break;case ':':
@@ -1885,7 +1889,7 @@ class tokens
     std::vector<comment> comments;
 
     //  A stable place to store additional tokens that are synthesized later
-    std::deque<token> generated_tokens;
+    stable_vector<token> generated_tokens;
 
 public:
     //-----------------------------------------------------------------------
@@ -2070,7 +2074,7 @@ public:
 
 };
 
-static auto generated_lexers = std::deque<tokens>{};
+static auto generated_lexers = stable_vector<tokens>{};    // TODO: static
 
 }
 

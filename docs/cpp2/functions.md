@@ -84,7 +84,9 @@ add: <T: type, U: type> (a:T, b:U) -> decltype(a+b) = { return a+b; }
 add: (a, b) -> _ = a+b;
 ```
 
-(2) **`#!cpp -> ( /* parameter list */ )`** to return a list of named return parameters using the same [parameters](#parameters) syntax, but where the only passing styles are `out` (the default, which moves where possible) or `forward`. The function body must [initialize](objects.md#init) the value of each return-parameter `ret` in its body the same way as any other local variable. An explicit return statement is written just `#!cpp return;` and returns the named values; the function has an implicit `#!cpp return;` at the end. For example:
+(2) **`#!cpp -> ( /* parameter list */ )`** to return a list of named return parameters using the same [parameters](#parameters) syntax, but where the only passing styles are `out` (the default, which moves where possible) or `forward`. The function body must [initialize](objects.md#init) the value of each return-parameter `ret` in its body the same way as any other local variable. An explicit return statement is written just `#!cpp return;` and returns the named values; the function has an implicit `#!cpp return;` at the end. If only a single return parameter is in the list, it is emitted in the lowered Cpp1 code the same way as (1) above, so its name is only available inside the function body.
+
+For example:
 
 ``` cpp title="Function with multiple/named return values" hl_lines="1 3-4 7-8 14 16-17"
 divide: (dividend: int, divisor: int) -> (quotient: int, remainder: int) = {
@@ -207,7 +209,7 @@ else {
 
 **`#!cpp do`** and **`#!cpp while`** are like always in C++, except that `(` `)` parentheses around the condition are not required. Instead, `{` `}` braces around the loop body *are* required.
 
-**`#!cpp for range do (e)`** ***statement*** says "for each element in `range`, call it `e` and perform the statement." The loop parameter `(e)` is an ordinary parameter that can be passed isoing any [parameter passing style](#parameters); as always, the default is `in`, which is read-only and expresses a read-only loop. The statement is not required to be enclosed in braces.
+**`#!cpp for range do (e)`** ***statement*** says "for each element in `range`, call it `e` and perform the statement." The loop parameter `(e)` is an ordinary parameter that can be passed using any [parameter passing style](#parameters); as always, the default is `in`, which is read-only and expresses a read-only loop. The statement is not required to be enclosed in braces.
 
 Every loop can have a `next` clause, that is performed at the end of each loop body execution. This makes it easy to have a counter for any loop, including a range `#!cpp for` loop.
 
@@ -265,6 +267,22 @@ if   i % 2 == 1         // if i is odd
 //  prints:
 //      counter: 1, word: [Betty]
 ```
+
+Here is the equivalent of the Cpp1 code `for ( int i = 0; i < 10; ++i ){ std::cout << i; }`:
+
+``` cpp title="Equivalent of Cpp1 'for ( int i = 0; i < 10; ++i ){ std::cout << i; }'"
+(copy i := 0)
+while i < 10
+next  i++ {
+    std::cout << i;
+}
+```
+
+Line by line:
+
+- `(copy i := 0)`: Any statement can have [statement-local parameters](declarations.md#from-functions-to-local-scopes-and-back-again), and this is declaring `i` as an `int` that's local to the loop. Parameters by default are `const`, and for not-cheap-to-copy types they bind to the original value; so because we want to modify `i` we say `copy` to explicitly declare this is the loop's own mutable scratch variable.
+- `while i < 10`: The termination condition.
+- `next i++`: The end-of-loop-iteration statement. Note `++` is always postfix in Cpp2.
 
 
 ### Loop names, `#!cpp break`, and `#!cpp continue`
